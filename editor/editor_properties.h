@@ -619,20 +619,31 @@ class EditorPropertyNodePath : public EditorProperty {
 		ACTION_COPY,
 		ACTION_EDIT,
 		ACTION_SELECT,
+		ACTION_SELECT_PROPERTY,
 	};
+
+	bool property_hint = true;
 
 	Button *assign = nullptr;
 	MenuButton *menu = nullptr;
 	LineEdit *edit = nullptr;
+	Button *property_select_button = nullptr;
 
 	SceneTreeDialog *scene_tree = nullptr;
+	PropertySelector *prop_selector = nullptr;
+	ConfirmationDialog *select_property_dialog = nullptr;
+
 	bool use_path_from_scene_root = false;
 	bool editing_node = false;
 	bool dropping = false;
+	bool property_selector_enabled = false;
 
 	Vector<StringName> valid_types;
 	void _node_selected(const NodePath &p_path, bool p_absolute = true);
+	void _property_selected(const String &p_name);
 	void _node_assign();
+	void _property_assign();
+	void _toggle_property_select();
 	void _assign_draw();
 	Node *get_base_node();
 	void _update_menu();

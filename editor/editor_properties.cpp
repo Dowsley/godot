@@ -2710,6 +2710,74 @@ void EditorPropertyNodePath::_node_selected(const NodePath &p_path, bool p_absol
 		emit_changed(get_edited_property(), path);
 	}
 	update_property();
+	
+	// Ask if the user wants to also select a property
+	if (!path.is_empty()) {
+		// Get the target node for property selection
+		Node *target_node = nullptr;
+		if (base_node) {
+			target_node = base_node->get_node_or_null(path);
+		} else {
+			target_node = get_tree()->get_edited_scene_root()->get_node_or_null(path);
+		}
+		
+		if (target_node) {
+			// Use a confirm dialog to ask the user if they want to select a property
+			if (!select_property_dialog) {
+				select_property_dialog = memnew(ConfirmationDialog);
+				select_property_dialog->set_title(TTR("Select Property?"));
+				select_property_dialog->set_text(TTR("Do you also want to select a property from this node?"));
+				select_property_dialog->get_ok_button()->set_text(TTR("Yes"));
+				select_property_dialog->get_cancel_button()->set_text(TTR("No"));
+				add_child(select_property_dialog);
+				select_property_dialog->connect("confirmed", callable_mp(this, &EditorPropertyNodePath::_property_assign));
+			}
+			select_property_dialog->popup_centered();
+		}
+	}
+}
+
+void EditorPropertyNodePath::_property_selected(const String &p_name) {
+	NodePath current_path = _get_node_path();
+	if (current_path.is_empty()) {
+		EditorNode::get_singleton()->show_warning(TTR("Please select a node first."));
+		return;
+	}
+
+	// Get the node from the path
+	Node *base_node = get_base_node();
+	Node *target_node = nullptr;
+
+	if (base_node) {
+		target_node = base_node->get_node_or_null(current_path);
+	} else {
+		target_node = get_tree()->get_edited_scene_root()->get_node_or_null(current_path);
+	}
+
+	if (!target_node) {
+		EditorNode::get_singleton()->show_warning(TTR("Cannot find node from path:") + " " + current_path);
+		return;
+	}
+
+	// Append the property to the node path
+	Vector<String> subname_string = String(p_name).split(":");
+	Vector<StringName> subname;
+	for (int i = 0; i < subname_string.size(); i++) {
+		subname.push_back(StringName(subname_string[i]));
+	}
+	
+	NodePath new_path = NodePath(current_path.get_names(), subname, current_path.is_absolute());
+	
+	if (editing_node) {
+		if (!base_node) {
+			emit_changed(get_edited_property(), get_tree()->get_edited_scene_root()->get_node(new_path));
+		} else {
+			emit_changed(get_edited_property(), base_node->get_node(new_path));
+		}
+	} else {
+		emit_changed(get_edited_property(), new_path);
+	}
+	update_property();
 }
 
 void EditorPropertyNodePath::_node_assign() {
@@ -2732,6 +2800,37 @@ void EditorPropertyNodePath::_node_assign() {
 	scene_tree->popup_scenetree_dialog(n, get_base_node());
 }
 
+void EditorPropertyNodePath::_property_assign() {
+	if (!prop_selector) {
+		prop_selector = memnew(PropertySelector);
+		add_child(prop_selector);
+		prop_selector->connect("selected", callable_mp(this, &EditorPropertyNodePath::_property_selected));
+	}
+
+	NodePath current_path = _get_node_path();
+	if (current_path.is_empty()) {
+		EditorNode::get_singleton()->show_warning(TTR("Please select a node first."));
+		return;
+	}
+
+	// Get the node from the path
+	Node *base_node = get_base_node();
+	Node *target_node = nullptr;
+
+	if (base_node) {
+		target_node = base_node->get_node_or_null(current_path);
+	} else {
+		target_node = get_tree()->get_edited_scene_root()->get_node_or_null(current_path);
+	}
+
+	if (!target_node) {
+		EditorNode::get_singleton()->show_warning(TTR("Cannot find node from path:") + " " + current_path);
+		return;
+	}
+
+	prop_selector->select_property_from_instance(target_node);
+}
+
 void EditorPropertyNodePath::_assign_draw() {
 	if (dropping) {
 		Color color = get_theme_color(SNAME("accent_color"), EditorStringName(Editor));
@@ -2744,6 +2843,7 @@ void EditorPropertyNodePath::_update_menu() {
 
 	menu->get_popup()->set_item_disabled(ACTION_CLEAR, np.is_empty());
 	menu->get_popup()->set_item_disabled(ACTION_COPY, np.is_empty());
+	menu->get_popup()->set_item_disabled(ACTION_SELECT_PROPERTY, np.is_empty());
 
 	Node *edited_node = Object::cast_to<Node>(get_edited_object());
 	menu->get_popup()->set_item_disabled(ACTION_SELECT, !edited_node || !edited_node->has_node(np));
@@ -2783,6 +2883,10 @@ void EditorPropertyNodePath::_menu_option(int p_idx) {
 			ERR_FAIL_NULL(target_node);
 
 			SceneTreeDock::get_singleton()->set_selected(target_node);
+		} break;
+		
+		case ACTION_SELECT_PROPERTY: {
+			_property_assign();
 		} break;
 	}
 }
@@ -2881,6 +2985,7 @@ void EditorPropertyNodePath::update_property() {
 	}
 	assign->set_flat(true);
 
+	Vector<StringName> subnames = p.get_subnames();
 	if (!base_node || !base_node->has_node(p)) {
 		assign->set_button_icon(Ref<Texture2D>());
 		assign->set_text(p);
@@ -2896,8 +3001,41 @@ void EditorPropertyNodePath::update_property() {
 		return;
 	}
 
-	assign->set_text(target_node->get_name());
-	assign->set_button_icon(EditorNode::get_singleton()->get_object_icon(target_node, "Node"));
+	String node_name = String(target_node->get_name());
+	
+	// Display both node name and property name if a property is selected
+	if (subnames.size() > 0) {
+		String prop_path = "";
+		for (int i = 0; i < subnames.size(); i++) {
+			if (i > 0) {
+				prop_path += ":";
+			}
+			prop_path += String(subnames[i]);
+		}
+		assign->set_text(node_name + ":" + prop_path);
+		
+		// Try to get property info to show the correct icon
+		String property_name = String(subnames[0]); // Get the first subname
+		
+		if (target_node) {
+			bool valid = false;
+			Variant value = target_node->get(property_name, &valid);
+			
+			if (valid) {
+				Ref<Texture2D> type_icon = EditorNode::get_singleton()->get_class_icon(Variant::get_type_name(value.get_type()));
+				assign->set_button_icon(type_icon);
+			} else {
+				// Fallback to node icon if property not found or invalid
+				assign->set_button_icon(EditorNode::get_singleton()->get_object_icon(target_node, "Node"));
+			}
+		} else {
+			// Fallback to node icon if property not found
+			assign->set_button_icon(EditorNode::get_singleton()->get_object_icon(target_node, "Node"));
+		}
+	} else {
+		assign->set_text(node_name);
+		assign->set_button_icon(EditorNode::get_singleton()->get_object_icon(target_node, "Node"));
+	}
 }
 
 void EditorPropertyNodePath::setup(const Vector<StringName> &p_valid_types, bool p_use_path_from_scene_root, bool p_editing_node) {
@@ -2915,6 +3053,7 @@ void EditorPropertyNodePath::_notification(int p_what) {
 			menu->get_popup()->set_item_icon(ACTION_COPY, get_editor_theme_icon(SNAME("ActionCopy")));
 			menu->get_popup()->set_item_icon(ACTION_EDIT, get_editor_theme_icon(SNAME("Edit")));
 			menu->get_popup()->set_item_icon(ACTION_SELECT, get_editor_theme_icon(SNAME("ExternalLink")));
+			menu->get_popup()->set_item_icon(ACTION_SELECT_PROPERTY, get_editor_theme_icon(SNAME("Inspector")));
 		} break;
 
 		case NOTIFICATION_DRAG_BEGIN: {
@@ -2983,6 +3122,8 @@ EditorPropertyNodePath::EditorPropertyNodePath() {
 	menu->get_popup()->add_item(TTR("Copy as Text"), ACTION_COPY);
 	menu->get_popup()->add_item(TTR("Edit"), ACTION_EDIT);
 	menu->get_popup()->add_item(TTR("Show Node in Tree"), ACTION_SELECT);
+	menu->get_popup()->add_separator();
+	menu->get_popup()->add_item(TTR("Select Property"), ACTION_SELECT_PROPERTY);
 	menu->get_popup()->connect(SceneStringName(id_pressed), callable_mp(this, &EditorPropertyNodePath::_menu_option));
 
 	edit = memnew(LineEdit);
@@ -2991,6 +3132,10 @@ EditorPropertyNodePath::EditorPropertyNodePath() {
 	edit->connect(SceneStringName(focus_exited), callable_mp(this, &EditorPropertyNodePath::_accept_text));
 	edit->connect(SceneStringName(text_submitted), callable_mp(this, &EditorPropertyNodePath::_text_submitted));
 	hbc->add_child(edit);
+	
+	prop_selector = nullptr;
+	scene_tree = nullptr;
+	dropping = false;
 }
 
 ///////////////////// RID /////////////////////////
